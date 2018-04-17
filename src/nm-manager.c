@@ -333,8 +333,6 @@ static NMConnectivity *concheck_get_mgr (NMManager *self);
 
 /*****************************************************************************/
 
-static NM_CACHED_QUARK_FCN ("active-connection-add-and-activate", active_connection_add_and_activate_quark)
-
 static NM_CACHED_QUARK_FCN ("autoconnect-root", autoconnect_root_quark)
 
 /*****************************************************************************/
@@ -4081,11 +4079,10 @@ static void
 _internal_activation_auth_done (NMActiveConnection *active,
                                 gboolean success,
                                 const char *error_desc,
-                                gpointer user_data1,
-                                gpointer user_data2)
+                                gpointer user_data)
 {
 	_nm_unused gs_unref_object NMActiveConnection *active_to_free = active;
-	NMManager *self = user_data1;
+	NMManager *self = user_data;
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 	NMActiveConnection *ac;
 	gs_free_error GError *error = NULL;
@@ -4213,7 +4210,7 @@ nm_manager_activate_connection (NMManager *self,
 		return NULL;
 
 	priv->authorizing_connections = g_slist_prepend (priv->authorizing_connections, active);
-	nm_active_connection_authorize (active, NULL, _internal_activation_auth_done, self, NULL);
+	nm_active_connection_authorize (active, NULL, _internal_activation_auth_done, self);
 	return active;
 }
 
@@ -4346,15 +4343,16 @@ static void
 _activation_auth_done (NMActiveConnection *active,
                        gboolean success,
                        const char *error_desc,
-                       gpointer user_data1,
-                       gpointer user_data2)
+                       gpointer user_data)
 {
-	NMManager *self = user_data1;
-	GDBusMethodInvocation *context = user_data2;
+	NMManager *self;
+	GDBusMethodInvocation *context;
 	GError *error = NULL;
 	NMAuthSubject *subject;
 	NMSettingsConnection *connection;
 	_nm_unused gs_unref_object NMActiveConnection *active_free = active;
+
+	nm_utils_user_data_pack (user_data, &self, &context);
 
 	subject = nm_active_connection_get_subject (active);
 	connection = nm_active_connection_get_settings_connection (active);
@@ -4477,8 +4475,7 @@ impl_manager_activate_connection (NMDBusObject *obj,
 	nm_active_connection_authorize (g_steal_pointer (&active),
 	                                NULL,
 	                                _activation_auth_done,
-	                                self,
-	                                invocation);
+	                                nm_utils_user_data_pack (self, invocation));
 	return;
 
 error:
@@ -4559,18 +4556,16 @@ static void
 _add_and_activate_auth_done (NMActiveConnection *active,
                              gboolean success,
                              const char *error_desc,
-                             gpointer user_data1,
-                             gpointer user_data2)
+                             gpointer user_data)
 {
-	NMManager *self = user_data1;
-	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
-	GDBusMethodInvocation *context = user_data2;
+	NMManager *self;
+	NMManagerPrivate *priv;
+	GDBusMethodInvocation *context;
+	gs_unref_object NMConnection *connection = NULL;
 	AddAndActivateInfo *info;
 	GError *error = NULL;
-	gs_unref_object NMConnection *connection = NULL;
 
-	connection = g_object_steal_qdata (G_OBJECT (active),
-	                                   active_connection_add_and_activate_quark ());
+	nm_utils_user_data_unpack (user_data, &self, &context, &connection);
 
 	if (!success) {
 		error = g_error_new_literal (NM_MANAGER_ERROR,
@@ -4586,6 +4581,8 @@ _add_and_activate_auth_done (NMActiveConnection *active,
 		g_object_unref (active);
 		return;
 	}
+
+	priv = NM_MANAGER_GET_PRIVATE (self);
 
 	info = g_slice_new (AddAndActivateInfo);
 	info->manager = self;
@@ -4690,17 +4687,9 @@ impl_manager_add_and_activate_connection (NMDBusObject *obj,
 	if (!active)
 		goto error;
 
-	/* FIXME: nm_active_connection_authorize() already has two user-data pointers
-	 *        to piggyback additional data. Instead of attaching the third argument to
-	 *        @active's user-data, add a third paramter.
-	 *        Or alternatively, allocate a data structure to pass on additional data.
-	 *        Then we don't need two user-data pointers. */
-	g_object_set_qdata_full (G_OBJECT (active),
-	                         active_connection_add_and_activate_quark (),
-	                         connection,
-	                         g_object_unref);
-
-	nm_active_connection_authorize (active, connection, _add_and_activate_auth_done, self, invocation);
+	nm_active_connection_authorize (active, connection,
+	                                _add_and_activate_auth_done,
+	                                nm_utils_user_data_pack (self, invocation, connection));
 
 	/* we passed the pointers on to the callback of authorize. */
 	g_steal_pointer (&connection);
