@@ -988,25 +988,64 @@ active_connection_find_first_by_connection (NMManager *self,
 	                                     NM_ACTIVE_CONNECTION_STATE_DEACTIVATING);
 }
 
+typedef struct {
+	NMManager *self;
+	NMDevice *device;
+	gboolean for_auto_activation;
+} GetActivatableConnectionsFilterData;
+
 static gboolean
 _get_activatable_connections_filter (NMSettings *settings,
                                      NMSettingsConnection *connection,
                                      gpointer user_data)
 {
+	const GetActivatableConnectionsFilterData *d = user_data;
+	NMSettingConnectionCardinality cardinality;
+
 	if (NM_FLAGS_HAS (nm_settings_connection_get_flags (connection),
 	                  NM_SETTINGS_CONNECTION_INT_FLAGS_VOLATILE))
 		return FALSE;
-	return !active_connection_find_first (user_data, connection, NULL, NM_ACTIVE_CONNECTION_STATE_DEACTIVATING);
+
+	cardinality = nm_device_get_cardinality_for_connection (d->device, NM_CONNECTION (connection));
+	if (   cardinality == NM_SETTING_CONNECTION_CARDINALITY_MULTIPLE
+	    || (   cardinality == NM_SETTING_CONNECTION_CARDINALITY_MANUAL_MULTIPLE
+	        && !d->for_auto_activation))
+		return TRUE;
+
+	return !active_connection_find_first (d->self,
+	                                      connection,
+	                                      NULL,
+	                                      NM_ACTIVE_CONNECTION_STATE_DEACTIVATING);
 }
 
+/* returns a list of all connections that are currently activatable.
+ * A connection is activatable, if
+ *  1) either it is not yet active/activating on a device
+ *  2) or if the connections' cardinality permits the connection to activate
+ *    multiple times.
+ * To evaluate for 2), we also need the target device (because the cardinality
+ * might be configured via the device's connection defaults). There is no
+ * check performed, whether the connection is actually compatible with
+ * the device.
+ *
+ * Optionally, the list will be sorted according to autoconnect priority. */
 NMSettingsConnection **
-nm_manager_get_activatable_connections (NMManager *manager, guint *out_len, gboolean sort)
+nm_manager_get_activatable_connections (NMManager *manager,
+                                        NMDevice *device,
+                                        gboolean for_auto_activation,
+                                        gboolean sort,
+                                        guint *out_len)
 {
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (manager);
+	const GetActivatableConnectionsFilterData d = {
+		.self = manager,
+		.device = device,
+		.for_auto_activation = for_auto_activation,
+	};
 
 	return nm_settings_get_connections_clone (priv->settings, out_len,
 	                                          _get_activatable_connections_filter,
-	                                          manager,
+	                                          (gpointer) &d,
 	                                          sort ? nm_settings_connection_cmp_autoconnect_priority_p_with_data : NULL,
 	                                          NULL);
 }
@@ -2424,7 +2463,7 @@ get_existing_connection (NMManager *self,
 
 		/* the state file doesn't indicate a connection UUID to assume. Search the
 		 * persistent connections for a matching candidate. */
-		connections = nm_manager_get_activatable_connections (self, &len, FALSE);
+		connections = nm_manager_get_activatable_connections (self, device, FALSE, FALSE, &len);
 		if (len > 0) {
 			for (i = 0, j = 0; i < len; i++) {
 				NMConnection *con = NM_CONNECTION (connections[i]);
@@ -3507,7 +3546,7 @@ ensure_master_active_connection (NMManager *self,
 			g_assert (master_connection == NULL);
 
 			/* Find a compatible connection and activate this device using it */
-			connections = nm_manager_get_activatable_connections (self, NULL, TRUE);
+			connections = nm_manager_get_activatable_connections (self, master_device, FALSE, TRUE, NULL);
 			for (i = 0; connections[i]; i++) {
 				NMSettingsConnection *candidate = connections[i];
 
