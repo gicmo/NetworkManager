@@ -53,6 +53,8 @@ gboolean nm_dbus_manager_start (NMDBusManager *self,
                                 NMDBusManagerSetPropertyHandler handler,
                                 gpointer handler_data);
 
+void nm_dbus_manager_stop (NMDBusManager *self);
+
 GDBusConnection *nm_dbus_manager_get_connection (NMDBusManager *self);
 
 NMDBusObject *nm_dbus_manager_lookup_object (NMDBusManager *self, const char *path);
